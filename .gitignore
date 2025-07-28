@@ -5,7 +5,9 @@ __pycache__/
 
 # C extensions
 *.so
-
+dataset/twcs.csv
+dataset/
+twcs.csv
 # Distribution / packaging
 .Python
 build/
