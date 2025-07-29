@@ -6,7 +6,7 @@ __pycache__/
 # C extensions
 *.so
 dataset/twcs.csv
-dataset/
+dataset/ 
 twcs.csv
 # Distribution / packaging
 .Python
