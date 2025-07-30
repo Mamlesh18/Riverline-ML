@@ -2,8 +2,8 @@ import sqlite3
 import pandas as pd
 import json
 import logging
-from .gemini_analyzer import GeminiAnalyzer
-from .cohort_builder import CohortBuilder
+from observe_user_behavior.ml_analyser import HybridAnalyzer
+from observe_user_behavior.cohort_builder import CohortBuilder
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -12,7 +12,7 @@ class UserBehaviorAnalyzer:
     def __init__(self, db_name='riverline.db'):
         self.db_path = db_name
         self.conn = None
-        self.gemini_analyzer = GeminiAnalyzer()
+        self.hybrid_analyzer = HybridAnalyzer()
         self.cohort_builder = CohortBuilder()
         self._initialize_database()
         
@@ -25,7 +25,6 @@ class UserBehaviorAnalyzer:
         """Create tables for storing analysis results"""
         cursor = self.conn.cursor()
         
-        # Table for conversation analysis results
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS conversation_analysis (
                 conversation_id INTEGER PRIMARY KEY,
@@ -38,11 +37,11 @@ class UserBehaviorAnalyzer:
                 conversation_type TEXT,
                 customer_behavior TEXT,
                 analysis_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                gemini_response TEXT  -- Full Gemini response for debugging
+                analysis_method TEXT,  -- 'rule_based', 'ml_model', 'gemini_llm', 'hybrid'
+                gemini_response TEXT  -- Full response for debugging
             )
         ''')
         
-        # Table for cohorts
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS customer_cohorts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,7 +53,6 @@ class UserBehaviorAnalyzer:
             )
         ''')
         
-        # Table for conversation-cohort mapping
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS conversation_cohort_mapping (
                 conversation_id INTEGER,
@@ -65,7 +63,7 @@ class UserBehaviorAnalyzer:
         ''')
         
         self.conn.commit()
-        print("Analysis tables created successfully")
+        print("✅ Analysis tables created successfully")
     
     def get_conversations_for_analysis(self, limit=None):
         """Get conversations from database for analysis"""
@@ -90,15 +88,15 @@ class UserBehaviorAnalyzer:
         return pd.read_sql_query(query, self.conn)
     
     def analyze_conversation(self, conversation_data):
-        """Analyze a single conversation using Gemini AI"""
+        """Analyze a single conversation using Hybrid approach"""
         try:
             conversation_id = conversation_data['conversation_id']
             full_conversation = conversation_data['full_conversation']
             
-            print(f"Analyzing conversation {conversation_id}...")
+            print(f"🔍 Analyzing conversation {conversation_id}...")
             
-            # Use Gemini to analyze the conversation
-            analysis_result = self.gemini_analyzer.analyze_conversation(full_conversation)
+            # Use Hybrid Analyzer (Rule-based + ML + Gemini)
+            analysis_result = self.hybrid_analyzer.analyze_conversation(full_conversation)
             
             if analysis_result:
                 # Store the analysis in database
@@ -119,8 +117,9 @@ class UserBehaviorAnalyzer:
         cursor.execute('''
             INSERT OR REPLACE INTO conversation_analysis 
             (conversation_id, is_resolved, resolution_confidence, tags, nature_of_request,
-             customer_sentiment, urgency_level, conversation_type, customer_behavior, gemini_response)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             customer_sentiment, urgency_level, conversation_type, customer_behavior, 
+             analysis_method, gemini_response)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             conversation_id,
             analysis.get('is_resolved', False),
@@ -131,6 +130,7 @@ class UserBehaviorAnalyzer:
             analysis.get('urgency_level', ''),
             analysis.get('conversation_type', ''),
             analysis.get('customer_behavior', ''),
+            'hybrid',  # Analysis method
             json.dumps(analysis)  # Store full response
         ))
         
@@ -145,14 +145,13 @@ class UserBehaviorAnalyzer:
         self.conn.commit()
         print("🧹 Cleared previous analysis data")
     
-    def analyze_all_conversations(self, limit=3):
+    
+    def analyze_all_conversations(self, limit=10):
         """Analyze only the first 3 conversations and create cohorts"""
         try:
-            # Clear previous analysis to start fresh
             self.clear_previous_analysis()
             
-            # Get only first 3 conversations for analysis
-            conversations_df = self.get_conversations_for_analysis(limit=3)
+            conversations_df = self.get_conversations_for_analysis(limit=10)
             
             print("Starting analysis of FIRST 3 conversations only...")
             print("="*60)
@@ -161,7 +160,6 @@ class UserBehaviorAnalyzer:
             resolved_count = 0
             open_count = 0
             
-            # Analyze each of the 3 conversations
             for idx, (_, conv_data) in enumerate(conversations_df.iterrows(), 1):
                 print(f"\n📋 ANALYZING CONVERSATION {idx}/3...")
                 print(f"Conversation ID: {conv_data['conversation_id']}")
@@ -224,7 +222,7 @@ class UserBehaviorAnalyzer:
             try:
                 tags = json.loads(tags_json)
                 all_tags.update(tags)
-            except json.JSONDecodeError:
+            except Exception:
                 continue
                 
         return list(all_tags)

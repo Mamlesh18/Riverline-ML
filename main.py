@@ -10,9 +10,8 @@ def run_data_pipeline():
     print("RIVERLINE DATA PIPELINE - SIMPLIFIED VERSION")
     print("="*60)
     
-    # Initialize and run pipeline
     pipeline = DataPipeline(db_name='riverline.db')
-    result = pipeline.run('./dataset/twcs.csv')
+    result = pipeline.run('./dataset/twcs-full.csv')
     
     print(f"\nPipeline Status: {result['status']}")
     
@@ -20,7 +19,6 @@ def run_data_pipeline():
         print(f"Records Processed: {result['records_processed']}")
         print(f"Conversations Created: {result['conversations_created']}")
         
-        # Get basic stats
         stats = pipeline.get_basic_stats()
         print("\nPipeline Statistics:")
         print(json.dumps(stats, indent=2, default=str))
@@ -35,11 +33,9 @@ def run_user_behavior_analysis():
     print("POWERED BY GEMINI AI")
     print("="*60)
     
-    # Initialize behavior analyzer
     analyzer = UserBehaviorAnalyzer(db_name='riverline.db')
     
-    # Analyze only first 3 conversations
-    result = analyzer.analyze_all_conversations()  # limit=3 is set by default now
+    result = analyzer.analyze_all_conversations()  
     
     if result['status'] == 'success':
         print(f"📊 Conversations Analyzed: {result['total_analyzed']}/3")
@@ -48,7 +44,6 @@ def run_user_behavior_analysis():
         print(f"🏷️  Unique Tags: {result['unique_tags']}")
         print(f"🎯 Cohorts Created: {result['cohorts_created']}")
         
-        # Show detailed results
         analyzer.print_analysis_summary()
         
     else:
@@ -64,10 +59,8 @@ def run_next_best_action():
     print("POWERED BY GEMINI AI - NBA OPTIMIZATION")
     print("="*60)
     
-    # Initialize NBA engine
     nba_engine = NextBestActionEngine(db_name='riverline.db')
     
-    # Generate NBA recommendations
     result = nba_engine.run_nba_analysis()
     
     if result['status'] == 'success':
@@ -92,19 +85,16 @@ def main():
     print("RIVERLINE NBA SYSTEM - FULL PIPELINE EXECUTION")
     print("="*60)
     
-    # Step 1: Run data pipeline
     pipeline_success = run_data_pipeline()
     
     if pipeline_success:
         print("\n✅ Data Pipeline completed successfully!")
         
-        # Step 2: Run user behavior analysis
         behavior_success = run_user_behavior_analysis()
         
         if behavior_success:
             print("\n✅ User Behavior Analysis completed successfully!")
             
-            # Step 3: Run Next Best Action engine
             nba_success = run_next_best_action()
             
             if nba_success:

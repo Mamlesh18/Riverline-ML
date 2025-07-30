@@ -2,8 +2,8 @@ import sqlite3
 import pandas as pd
 import csv
 import logging
-from next_best_action.decision_engine import DecisionEngine
-from next_best_action.channel_optimizer import ChannelOptimizer
+from .decision_engine import DecisionEngine
+from .channel_optimizer import ChannelOptimizer
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ class NextBestActionEngine:
         print("🔗 Connected to database for NBA analysis")
     
     def get_customer_data(self):
-        """Get customer data with conversation analysis and cohort information"""
+        """Get customer data with conversation analysis, cohort information, and complete chat history"""
         query = '''
             SELECT 
                 ca.conversation_id,
@@ -37,19 +37,24 @@ class NextBestActionEngine:
                 gc.message_text as latest_message,
                 gc.created_at as latest_interaction,
                 GROUP_CONCAT(cc.cohort_name, '; ') as customer_cohorts,
-                COUNT(gc.tweet_id) as total_messages
+                COUNT(DISTINCT gc.tweet_id) as total_messages,
+                GROUP_CONCAT(
+                    gc.created_at || ' | ' || gc.author_id || ': ' || gc.message_text, 
+                    ' ### '  -- Use a different separator that won't cause CSV issues
+                ) as chat_history
             FROM conversation_analysis ca
             JOIN grouped_conversations gc ON ca.conversation_id = gc.conversation_id
             LEFT JOIN conversation_cohort_mapping ccm ON ca.conversation_id = ccm.conversation_id
             LEFT JOIN customer_cohorts cc ON ccm.cohort_id = cc.id
             WHERE ca.is_resolved = 0  -- Only unresolved conversations
             GROUP BY ca.conversation_id, ca.is_resolved, ca.tags, ca.nature_of_request, 
-                     ca.customer_sentiment, ca.urgency_level, ca.conversation_type, 
-                     ca.customer_behavior, gc.author_id
+                    ca.customer_sentiment, ca.urgency_level, ca.conversation_type, 
+                    ca.customer_behavior
             ORDER BY ca.conversation_id
         '''
         
         return pd.read_sql_query(query, self.conn)
+
     
     def generate_next_best_actions(self):
         """Generate next best actions for all unresolved conversations"""
@@ -111,32 +116,44 @@ class NextBestActionEngine:
             return []
     
     def save_recommendations_to_csv(self, recommendations):
-        """Save NBA recommendations to CSV file"""
+        """Save NBA recommendations to CSV file with proper formatting for multi-line fields"""
         if not recommendations:
             print("⚠️  No recommendations to save")
             return
         
-        csv_filename = 'results.csv'
+        csv_filename = 'nba_results.csv'
         
         with open(csv_filename, 'w', newline='', encoding='utf-8') as csvfile:
-            fieldnames = ['customer_id', 'conversation_id', 'channel', 'send_time', 'message', 'reasoning']
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            fieldnames = ['customer_id', 'conversation_id', 'channel', 'send_time', 'message', 'reasoning', 'issue_status', 'chat_history']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)  # Quote all fields
             
             # Write header
             writer.writeheader()
             
             # Write recommendations
             for rec in recommendations:
+                # Clean chat history - replace problematic separators with readable format
+                chat_history = rec.get('chat_history', '')
+                if chat_history:
+                    # Replace the database separator with a more readable format
+                    chat_history = chat_history.replace(' ### ', ' | ')
+                    # Remove any remaining newlines that might cause CSV issues
+                    chat_history = chat_history.replace('\n', ' | ').replace('\r', '')
+                
                 writer.writerow({
                     'customer_id': rec['customer_id'],
                     'conversation_id': rec.get('conversation_id', ''),
                     'channel': rec['channel'],
                     'send_time': rec['send_time'],
                     'message': rec['message'],
-                    'reasoning': rec['reasoning']
+                    'reasoning': rec['reasoning'],
+                    'issue_status': rec.get('issue_status', 'pending_customer_reply'),
+                    'chat_history': chat_history
                 })
         
         print(f"📄 Results saved to '{csv_filename}'")
+
+
     
     def print_recommendations_summary(self, recommendations):
         """Print summary of NBA recommendations"""

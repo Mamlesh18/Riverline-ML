@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timedelta
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ class ChannelOptimizer:
             'twitter_dm_reply': {
                 'max_delay_hours': 2,     # Twitter users expect quick responses
                 'preferred_hours': (9, 20), # 9 AM - 8 PM
-                'message_max_length': 280,  # Twitter character limit
+                'message_max_length': 500,  # Twitter character limit
                 'tone': 'casual'
             },
             'email_reply': {
@@ -41,7 +42,7 @@ class ChannelOptimizer:
         }
     
     def optimize_recommendation(self, recommendation, customer_data):
-        """Optimize the NBA recommendation with business rules and constraints"""
+        """Optimize the NBA recommendation with business rules and constraints - REASONING FROM GEMINI ONLY"""
         try:
             optimized_rec = recommendation.copy()
             
@@ -59,23 +60,20 @@ class ChannelOptimizer:
                 customer_data
             )
             
-            # Add channel justification to reasoning
-            optimized_rec['reasoning'] = self._enhance_reasoning(
-                recommendation['reasoning'],
-                recommendation['channel'],
-                customer_data
-            )
+            # KEEP REASONING FROM GEMINI UNCHANGED - NO ENHANCEMENT
+            # optimized_rec['reasoning'] stays exactly as provided by Gemini LLM
+            
+            # KEEP ISSUE STATUS FROM GEMINI UNCHANGED
+            # optimized_rec['issue_status'] stays exactly as provided by Gemini LLM
             
             # Validate final recommendation
             if self._validate_recommendation(optimized_rec):
                 return optimized_rec
             else:
                 logger.warning("Recommendation validation failed, using fallback")
-                return self._create_safe_fallback(customer_data)
                 
         except Exception as e:
             logger.error(f"Error optimizing recommendation: {str(e)}")
-            return self._create_safe_fallback(customer_data)
     
     def _optimize_send_time(self, original_time, channel, urgency):
         """Optimize send time based on channel constraints and urgency"""
@@ -166,37 +164,13 @@ class ChannelOptimizer:
             logger.error(f"Error optimizing message: {str(e)}")
             return original_message
     
-    def _enhance_reasoning(self, original_reasoning, channel, customer_data):
-        """Enhance reasoning with channel-specific justification"""
-        try:
-            enhanced_reasoning = original_reasoning
-            
-            # Add channel selection justification
-            channel_justifications = {
-                'twitter_dm_reply': f"Twitter DM selected because: fast response expected, customer is active on social media, and issue complexity is manageable via messaging. Customer sentiment ({customer_data['customer_sentiment']}) and urgency ({customer_data['urgency_level']}) support quick digital resolution.",
-                
-                'email_reply': f"Email selected because: issue requires detailed explanation, customer behavior ({customer_data['customer_behavior']}) suggests preference for written communication, and urgency level ({customer_data['urgency_level']}) allows for comprehensive response.",
-                
-                'scheduling_phone_call': f"Phone call scheduled because: high urgency ({customer_data['urgency_level']}), customer sentiment ({customer_data['customer_sentiment']}) indicates frustration requiring personal touch, and issue complexity needs real-time problem-solving."
-            }
-            
-            if channel in channel_justifications:
-                enhanced_reasoning += f" CHANNEL OPTIMIZATION: {channel_justifications[channel]}"
-            
-            # Add NBA principles explanation
-            enhanced_reasoning += f" NBA PRINCIPLES APPLIED: Customer-centric approach based on cohort analysis ({customer_data['customer_cohorts']}), behavioral patterns, and resolution optimization."
-            
-            return enhanced_reasoning
-            
-        except Exception as e:
-            logger.error(f"Error enhancing reasoning: {str(e)}")
-            return original_reasoning
+    
     
     def _validate_recommendation(self, recommendation):
         """Validate the final recommendation meets all constraints"""
         try:
             # Check required fields
-            required_fields = ['customer_id', 'channel', 'send_time', 'message', 'reasoning']
+            required_fields = ['customer_id', 'channel', 'send_time', 'message', 'reasoning', 'issue_status']
             for field in required_fields:
                 if field not in recommendation or not recommendation[field]:
                     logger.warning(f"Missing or empty field: {field}")
@@ -208,10 +182,16 @@ class ChannelOptimizer:
                 logger.warning(f"Invalid channel: {recommendation['channel']}")
                 return False
             
+            # Validate issue status
+            valid_statuses = ['resolved', 'pending_customer_reply']
+            if recommendation['issue_status'] not in valid_statuses:
+                logger.warning(f"Invalid issue status: {recommendation['issue_status']}")
+                return False
+            
             # Validate time format
             try:
                 datetime.fromisoformat(recommendation['send_time'].replace('Z', '+00:00'))
-            except ValueError:
+            except:
                 logger.warning(f"Invalid time format: {recommendation['send_time']}")
                 return False
             
@@ -228,32 +208,6 @@ class ChannelOptimizer:
         except Exception as e:
             logger.error(f"Error validating recommendation: {str(e)}")
             return False
+
     
-    def _create_safe_fallback(self, customer_data):
-        """Create a safe fallback recommendation"""
-        urgency = customer_data.get('urgency_level', 'medium')
-        sentiment = customer_data.get('customer_sentiment', 'neutral')
-        
-        # Safe channel selection
-        if urgency in ['high', 'critical']:
-            channel = 'scheduling_phone_call'
-        elif sentiment in ['frustrated', 'angry']:
-            channel = 'email_reply'  # Professional written response
-        else:
-            channel = 'twitter_dm_reply'  # Default to quick response
-        
-        # Safe timing: 4 hours from now during business hours
-        send_time = datetime.now() + timedelta(hours=4)
-        if send_time.hour < 9:
-            send_time = send_time.replace(hour=9, minute=0)
-        elif send_time.hour >= 18:
-            send_time = send_time.replace(hour=16, minute=0)  # 4 PM
-        
-        return {
-            'customer_id': customer_data['customer_id'],
-            'conversation_id': customer_data.get('conversation_id', ''),
-            'channel': channel,
-            'send_time': send_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
-            'message': f"Hello! We're working to resolve your {customer_data.get('nature_of_request', 'inquiry')}. Thank you for your patience.",
-            'reasoning': f"Safe fallback recommendation based on urgency ({urgency}) and sentiment ({sentiment}). Applied conservative NBA principles for customer satisfaction."
-        }
+    
