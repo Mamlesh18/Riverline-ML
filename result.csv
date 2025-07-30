@@ -1,0 +1,14 @@
+Metric,Value,Description
+Total Conversations in Dataset,6265.0,Total conversations found in the dataset
+Already Resolved (Excluded),0.0,"Conversations already resolved, excluded from NBA processing"
+Open Conversations Available,6265.0,Open conversations available for NBA recommendations
+Customers Processed by NBA,1000.0,Number of customers successfully processed by NBA engine
+Channel: Twitter DM Reply,1000.0,Customers recommended for Twitter DM response
+Channel: Email Reply,0.0,Customers recommended for email response
+Channel: Phone Call,0.0,Customers recommended for phone call
+Predicted Status: Resolved,799.0,Customers predicted to have issues resolved after action
+Predicted Status: Pending Customer Reply,128.0,Customers where we expect to wait for customer response
+Predicted Status: Escalated,0.0,Customers requiring escalation to senior support
+Expected Resolution Rate (%),79.9,Percentage of customers expected to resolve after NBA action
+Average Confidence Score,0.76,Average confidence score for NBA recommendations
+Processing Success Rate (%),100.0,Percentage of available customers successfully processed

@@ -105,6 +105,36 @@ class DataCleaner:
         else:
             # Parent tweet not found in this chunk, current tweet becomes root
             return current_tweet_id
+    def validate_conversations(self, conversations, df):
+        """
+        Add validation to ensure conversation building is working correctly
+        """
+        print(f"Total tweets processed: {len(df)}")
+        print(f"Total conversations built: {len(conversations)}")
+        print(f"Tweets in conversations: {sum(len(conv) for conv in conversations.values())}")
+        
+        # Check for orphaned tweets
+        tweets_in_conversations = set()
+        for conv_messages in conversations.values():
+            for msg in conv_messages:
+                tweets_in_conversations.add(msg['tweet_id'])
+        
+        orphaned_tweets = set(df['tweet_id']) - tweets_in_conversations
+        print(f"Orphaned tweets (not in any conversation): {len(orphaned_tweets)}")
+        
+        # Analyze conversation sizes
+        conv_sizes = [len(conv) for conv in conversations.values()]
+        print(f"Average conversation size: {np.mean(conv_sizes):.2f}")
+        print(f"Single message conversations: {sum(1 for size in conv_sizes if size == 1)}")
+        print(f"Multi-turn conversations: {sum(1 for size in conv_sizes if size > 1)}")
+        
+        # Check inbound/outbound distribution
+        total_inbound = df['inbound'].sum()
+        total_outbound = len(df) - total_inbound
+        print(f"Inbound messages: {total_inbound}")
+        print(f"Outbound messages: {total_outbound}")
+        
+        return conversations
     
     def _extract_conversation_metadata(self, conv_id, messages):
         customer_msgs = [m for m in messages if m['inbound']]
@@ -129,22 +159,69 @@ class DataCleaner:
         return metadata
     
     def _check_if_resolved(self, messages):
+        """
+        Improved resolution detection logic with multiple indicators
+        """
         if len(messages) < 2:
             return False
         
         last_message = messages[-1]
-        if not last_message['inbound']:
-            resolution_patterns = [
-                r'resolved', r'fixed', r'solved', r'thank you', r'thanks',
-                r'glad.*help', r'happy.*help', r'issue.*closed'
-            ]
-            last_text = last_message['text'].lower()
-            if any(re.search(pattern, last_text) for pattern in resolution_patterns):
+        second_last_message = messages[-2] if len(messages) >= 2 else None
+        
+        # Check for explicit resolution patterns in ANY message (not just last)
+        resolution_patterns = [
+            r'resolved', r'fixed', r'solved', r'thank you', r'thanks',
+            r'glad.*help', r'happy.*help', r'issue.*closed', r'problem.*solved',
+            r'working.*now', r'all.*set', r'perfect', r'great.*thanks',
+            r'appreciate.*help', r'got.*it.*working', r'issue.*resolved',
+            r'no.*longer.*problem', r'everything.*fine', r'sorted.*out'
+        ]
+        
+        # Check last few messages for resolution indicators
+        recent_messages = messages[-3:] if len(messages) >= 3 else messages
+        for msg in recent_messages:
+            msg_text = msg['text'].lower()
+            if any(re.search(pattern, msg_text) for pattern in resolution_patterns):
                 return True
         
-        time_diff = messages[-1]['created_at'] - messages[0]['created_at']
-        if time_diff.total_seconds() / 3600 > 24 and not messages[-1]['inbound']:
-            return True
+        # Check if conversation ends with agent response and no follow-up from customer
+        if not last_message['inbound']:  # Last message from agent
+            time_diff = messages[-1]['created_at'] - messages[0]['created_at']
+            
+            # If agent responded and customer hasn't replied back for a reasonable time
+            if time_diff.total_seconds() / 3600 > 2:  # More than 2 hours
+                
+                # Check if agent message contains helpful/concluding language
+                agent_text = last_message['text'].lower()
+                helpful_patterns = [
+                    r'help', r'try', r'should.*work', r'let.*know', r'contact.*us',
+                    r'here.*how', r'you.*can', r'follow.*steps', r'this.*should'
+                ]
+                
+                if any(re.search(pattern, agent_text) for pattern in helpful_patterns):
+                    return True
+        
+        # Check for customer satisfaction indicators
+        if last_message['inbound']:  # Last message from customer
+            customer_text = last_message['text'].lower()
+            satisfaction_patterns = [
+                r'thanks', r'thank you', r'perfect', r'great', r'awesome',
+                r'exactly.*needed', r'that.*worked', r'helped.*lot'
+            ]
+            
+            if any(re.search(pattern, customer_text) for pattern in satisfaction_patterns):
+                return True
+        
+        # Check conversation flow - if it's been inactive for more than 24 hours
+        # and last meaningful exchange happened
+        if len(messages) >= 3:
+            time_diff = messages[-1]['created_at'] - messages[0]['created_at']
+            if time_diff.total_seconds() / 3600 > 24:
+                
+                # Look for any resolution indicators in the conversation
+                all_text = ' '.join([m['text'].lower() for m in messages])
+                if any(re.search(pattern, all_text) for pattern in resolution_patterns):
+                    return True
         
         return False
     

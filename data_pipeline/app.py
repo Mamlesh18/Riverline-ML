@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from data_pipeline.data_clean import DataCleaner
 from data_pipeline.data_store import DataStore
+import numpy as np
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -50,12 +51,83 @@ class DataPipeline:
                 'status': 'failed',
                 'error': str(e)
             }
-    
+    def run_data_quality_checks(self, df):
+        """
+        Perform comprehensive data quality checks
+        """
+        print("\n" + "="*50)
+        print("DATA QUALITY ANALYSIS")
+        print("="*50)
+        
+        # Basic statistics
+        print(f"Total records: {len(df)}")
+        print(f"Date range: {df['created_at'].min()} to {df['created_at'].max()}")
+        
+        # Check inbound/outbound distribution
+        inbound_count = df['inbound'].sum()
+        outbound_count = len(df) - inbound_count
+        print(f"Inbound messages (customers): {inbound_count} ({inbound_count/len(df)*100:.1f}%)")
+        print(f"Outbound messages (agents): {outbound_count} ({outbound_count/len(df)*100:.1f}%)")
+        
+        # Check response patterns
+        has_response_to = df['in_response_to_tweet_id'].notna() & (df['in_response_to_tweet_id'] != '')
+        print(f"Messages with response_to_tweet_id: {has_response_to.sum()}")
+        
+        # Check for conversation threads
+        response_ids = set(df[has_response_to]['in_response_to_tweet_id'])
+        tweet_ids = set(df['tweet_id'].astype(str))
+        valid_responses = len(response_ids.intersection(tweet_ids))
+        print(f"Valid response references (parent tweet exists): {valid_responses}")
+        print(f"Orphaned responses (parent not found): {len(response_ids) - valid_responses}")
+        
+        # Sample conversation analysis
+        print("\nSample conversation threading:")
+        sample_conversations = df[has_response_to].head(5)
+        for _, row in sample_conversations.iterrows():
+            parent_exists = row['in_response_to_tweet_id'] in tweet_ids
+            print(f"Tweet {row['tweet_id']} -> Parent {row['in_response_to_tweet_id']} (exists: {parent_exists})")
+        
+        # Check text quality
+        empty_text = df['text'].isna() | (df['text'] == '')
+        print(f"\nEmpty/null text messages: {empty_text.sum()}")
+        
+        avg_text_length = df[~empty_text]['text'].str.len().mean()
+        print(f"Average text length: {avg_text_length:.1f} characters")
+        
+        # Check for potential resolution indicators
+        all_text = ' '.join(df['text'].fillna('').astype(str))
+        resolution_keywords = ['thank', 'thanks', 'resolved', 'fixed', 'solved', 'working']
+        keyword_counts = {keyword: all_text.lower().count(keyword) for keyword in resolution_keywords}
+        print("\nResolution keyword analysis:")
+        for keyword, count in keyword_counts.items():
+            print(f"  '{keyword}': {count} occurrences")
+        
+        return df
     def _process_file(self, csv_path):
         total_records = 0
         all_conversations = {}
         all_metadata = {}
         
+        # Load all data first for better conversation threading
+        print("Loading full dataset for conversation analysis...")
+        full_df = pd.read_csv(csv_path)
+        print(f"Loaded {len(full_df)} total records")
+        
+        # Run data quality checks
+        full_df = self.run_data_quality_checks(full_df)
+        
+        # Clean the full dataset
+        print("Cleaning full dataset...")
+        cleaned_full_df = self.cleaner.clean_raw_data(full_df)
+        
+        # Build conversations on the full dataset
+        print("Building conversations from full dataset...")
+        conversations, metadata = self.cleaner.build_conversations(cleaned_full_df)
+        
+        # Validate conversations
+        conversations = self.cleaner.validate_conversations(conversations, cleaned_full_df)
+        
+        # Process in chunks for database insertion
         for chunk in pd.read_csv(csv_path, chunksize=self.batch_size):
             logger.info(f"Processing chunk with {len(chunk)} records...")
             
@@ -66,15 +138,20 @@ class DataPipeline:
             except Exception as e:
                 logger.warning(f"Some tweets already exist, continuing: {str(e)}")
             
-            conversations, metadata = self.cleaner.build_conversations(cleaned_chunk)
-            all_conversations.update(conversations)
-            all_metadata.update(metadata)
-            
             total_records += len(cleaned_chunk)
             logger.info(f"Processed {total_records} records so far...")
         
+        # Store all conversations
         logger.info("Storing conversation data...")
-        self._store_conversations(all_conversations, all_metadata)
+        self._store_conversations(conversations, metadata)
+        
+        # Print resolution statistics
+        resolved_count = sum(1 for meta in metadata.values() if meta['is_resolved'])
+        print(f"\nCONVERSATION RESOLUTION ANALYSIS:")
+        print(f"Total conversations: {len(conversations)}")
+        print(f"Resolved conversations: {resolved_count}")
+        print(f"Open conversations: {len(conversations) - resolved_count}")
+        print(f"Resolution rate: {resolved_count/len(conversations)*100:.1f}%")
         
         return total_records
     
