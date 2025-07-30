@@ -2,13 +2,15 @@ import requests
 import json
 import logging
 from typing import Dict, Optional
-GEMINI_API_KEY = "AIzaSyCvXhAn1JcpTVHEgntW-tqUnVeP1q8Y3Fc"
+from dotenv import load_dotenv
+import os
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 class GeminiAnalyzer:
     def __init__(self):
         # Get API key from environment variable
-        self.api_key = GEMINI_API_KEY
+        self.api_key = os.getenv("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY environment variable not set!")
         

@@ -2,7 +2,10 @@ import json
 import requests
 import logging
 from datetime import datetime, timedelta
-GEMINI_API_KEY = "AIzaSyDYRF_selN_heL1SpJLOEp62gdU846oJzM"
+from dotenv import load_dotenv
+import os
+load_dotenv()
+
 logger = logging.getLogger(__name__)
 
 class DecisionEngine:
@@ -17,7 +20,7 @@ class DecisionEngine:
     """
     
     def __init__(self):
-        self.api_key = GEMINI_API_KEY
+        self.api_key = os.getenv("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY environment variable not set!")
         
