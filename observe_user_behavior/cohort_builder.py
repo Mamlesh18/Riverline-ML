@@ -1,137 +1,256 @@
+import sqlite3
 import pandas as pd
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
+import json
+import logging
+from collections import defaultdict, Counter
+
+logger = logging.getLogger(__name__)
 
 class CohortBuilder:
     def __init__(self):
         self.cohort_definitions = self._define_cohorts()
-        self.cohort_stats = {}
-        
+    
     def _define_cohorts(self):
+        """Define cohort criteria"""
         return {
-            'quick_resolution': lambda df: (
-                (df['message_count'] <= 4) & 
-                (df['conversation_duration_minutes'] < 60) & 
-                (df['is_resolved'] == 1)
-            ),
-            
-            'frustrated_customer': lambda df: (
-                (df['sentiment_score'] < -0.3) |
-                (df['max_consecutive_customer_messages'] >= 3)
-            ),
-            
-            'urgent_technical': lambda df: (
-                (df['urgency_score'] > 0.5) & 
-                (df['complexity_score'] > 0.6)
-            ),
-            
-            'patient_detailed': lambda df: (
-                (df['avg_response_time_minutes'] > 30) & 
-                (df['avg_customer_message_length'] > 150) &
-                (df['sentiment_score'] > -0.2)
-            ),
-            
-            'abandoned_conversation': lambda df: (
-                (df['last_message_by_customer'] == 1) & 
-                (df['is_resolved'] == 0) &
-                (df['message_count'] > 2)
-            ),
-            
-            'ping_pong': lambda df: (
-                (df['customer_agent_ratio'] > 0.8) & 
-                (df['customer_agent_ratio'] < 1.2) &
-                (df['message_count'] > 6)
-            ),
-            
-            'escalation_needed': lambda df: (
-                (df['complexity_score'] > 0.8) & 
-                (df['sentiment_score'] < -0.4) &
-                (df['is_resolved'] == 0)
-            )
+            "frustrated_billing_customers": {
+                "name": "Frustrated Billing Customers",
+                "description": "Customers with negative sentiment about billing issues",
+                "criteria": {
+                    "nature_of_request": "billing",
+                    "customer_sentiment": ["negative", "frustrated"]
+                }
+            },
+            "technical_power_users": {
+                "name": "Technical Power Users", 
+                "description": "Customers with technical issues showing technical behavior",
+                "criteria": {
+                    "nature_of_request": "technical",
+                    "customer_behavior": "technical"
+                }
+            },
+            "urgent_unresolved": {
+                "name": "Urgent Unresolved Issues",
+                "description": "High urgency conversations that remain unresolved",
+                "criteria": {
+                    "urgency_level": ["high", "critical"],
+                    "is_resolved": False
+                }
+            },
+            "satisfied_customers": {
+                "name": "Satisfied Customers",
+                "description": "Customers with positive sentiment and resolved issues",
+                "criteria": {
+                    "customer_sentiment": ["positive", "satisfied"],
+                    "is_resolved": True
+                }
+            },
+            "impatient_customers": {
+                "name": "Impatient Customers",
+                "description": "Customers showing impatient behavior patterns",
+                "criteria": {
+                    "customer_behavior": ["impatient", "angry"]
+                }
+            },
+            "account_access_issues": {
+                "name": "Account Access Issues",
+                "description": "Customers having trouble accessing their accounts",
+                "criteria": {
+                    "nature_of_request": "account"
+                }
+            },
+            "complex_escalations": {
+                "name": "Complex Escalations",
+                "description": "Complex issues that required escalation",
+                "criteria": {
+                    "conversation_type": "escalation",
+                    "urgency_level": ["high", "critical"]
+                }
+            },
+            "polite_inquiries": {
+                "name": "Polite General Inquiries", 
+                "description": "Polite customers with general questions",
+                "criteria": {
+                    "customer_behavior": ["polite", "cooperative"],
+                    "nature_of_request": "general"
+                }
+            }
         }
     
-    def assign_cohorts(self, features_df):
-        features_df['cohort'] = 'standard_support'
-        
-        for cohort_name, condition_func in self.cohort_definitions.items():
-            mask = condition_func(features_df)
-            features_df.loc[mask, 'cohort'] = cohort_name
-        
-        return features_df
-    
-    def analyze_cohort_statistics(self, features_df):
-        cohort_stats = {}
-        
-        for cohort in features_df['cohort'].unique():
-            cohort_data = features_df[features_df['cohort'] == cohort]
+    def create_cohorts(self, conn):
+        """Create cohorts based on conversation analysis"""
+        try:
+            # Get all analyzed conversations
+            analysis_df = pd.read_sql_query('''
+                SELECT conversation_id, is_resolved, tags, nature_of_request, 
+                       customer_sentiment, urgency_level, conversation_type, customer_behavior
+                FROM conversation_analysis
+            ''', conn)
             
-            stats = {
-                'count': len(cohort_data),
-                'percentage': len(cohort_data) / len(features_df) * 100,
-                'resolution_rate': cohort_data['is_resolved'].mean() * 100,
-                'avg_sentiment': cohort_data['sentiment_score'].mean(),
-                'avg_messages': cohort_data['message_count'].mean(),
-                'avg_duration_minutes': cohort_data['conversation_duration_minutes'].mean(),
-                'avg_response_time': cohort_data['avg_response_time_minutes'].mean()
-            }
+            if len(analysis_df) == 0:
+                logger.warning("No analyzed conversations found")
+                return 0
             
-            cohort_stats[cohort] = stats
-        
-        self.cohort_stats = cohort_stats
-        return pd.DataFrame(cohort_stats).T
-    
-    def identify_resolution_patterns(self, features_df):
-        resolution_patterns = {}
-        
-        for cohort in features_df['cohort'].unique():
-            cohort_data = features_df[features_df['cohort'] == cohort]
+            cursor = conn.cursor()
             
-            resolved = cohort_data[cohort_data['is_resolved'] == 1]
-            unresolved = cohort_data[cohort_data['is_resolved'] == 0]
+            # Clear existing cohorts
+            cursor.execute('DELETE FROM customer_cohorts')
+            cursor.execute('DELETE FROM conversation_cohort_mapping')
             
-            if len(resolved) > 0 and len(unresolved) > 0:
-                patterns = {
-                    'resolution_rate': len(resolved) / len(cohort_data),
-                    'resolved_avg_messages': resolved['message_count'].mean(),
-                    'unresolved_avg_messages': unresolved['message_count'].mean(),
-                    'resolved_avg_duration': resolved['conversation_duration_minutes'].mean(),
-                    'unresolved_avg_duration': unresolved['conversation_duration_minutes'].mean(),
-                    'sentiment_difference': resolved['sentiment_score'].mean() - unresolved['sentiment_score'].mean()
-                }
+            cohorts_created = 0
+            
+            # Create each cohort
+            for cohort_key, cohort_def in self.cohort_definitions.items():
+                matching_conversations = self._find_matching_conversations(analysis_df, cohort_def['criteria'])
                 
-                resolution_patterns[cohort] = patterns
-        
-        return resolution_patterns
+                if len(matching_conversations) > 0:
+                    # Insert cohort
+                    cursor.execute('''
+                        INSERT INTO customer_cohorts (cohort_name, cohort_description, cohort_criteria, conversation_count)
+                        VALUES (?, ?, ?, ?)
+                    ''', (
+                        cohort_def['name'],
+                        cohort_def['description'],
+                        json.dumps(cohort_def['criteria']),
+                        len(matching_conversations)
+                    ))
+                    
+                    cohort_id = cursor.lastrowid
+                    
+                    # Insert conversation mappings
+                    for conv_id in matching_conversations:
+                        cursor.execute('''
+                            INSERT INTO conversation_cohort_mapping (conversation_id, cohort_id)
+                            VALUES (?, ?)
+                        ''', (conv_id, cohort_id))
+                    
+                    cohorts_created += 1
+                    print(f"Created cohort '{cohort_def['name']}' with {len(matching_conversations)} conversations")
+            
+            # Create dynamic cohorts based on tags
+            tag_cohorts = self._create_tag_based_cohorts(analysis_df, cursor)
+            cohorts_created += tag_cohorts
+            
+            conn.commit()
+            print(f"Total cohorts created: {cohorts_created}")
+            return cohorts_created
+            
+        except Exception as e:
+            logger.error(f"Error creating cohorts: {str(e)}")
+            return 0
     
-    def create_ml_cohorts(self, features_df, n_clusters=8):
-        feature_columns = [
-            'message_count', 'sentiment_score', 'urgency_score', 'complexity_score',
-            'conversation_duration_minutes', 'avg_response_time_minutes',
-            'customer_agent_ratio', 'message_velocity', 'max_consecutive_customer_messages'
-        ]
+    def _find_matching_conversations(self, df, criteria):
+        """Find conversations matching cohort criteria"""
+        mask = pd.Series([True] * len(df))
         
-        X = features_df[feature_columns].fillna(0)
+        for field, expected_values in criteria.items():
+            if isinstance(expected_values, list):
+                mask &= df[field].isin(expected_values)
+            elif isinstance(expected_values, bool):
+                mask &= (df[field] == expected_values)
+            else:
+                mask &= (df[field] == expected_values)
         
-        from sklearn.preprocessing import StandardScaler
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        
-        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-        features_df['ml_cohort'] = kmeans.fit_predict(X_scaled)
-        
-        silhouette_avg = silhouette_score(X_scaled, features_df['ml_cohort'])
-        
-        ml_cohort_profiles = {}
-        for cluster in range(n_clusters):
-            cluster_data = features_df[features_df['ml_cohort'] == cluster]
-            profile = {
-                'size': len(cluster_data),
-                'resolution_rate': cluster_data['is_resolved'].mean(),
-                'avg_sentiment': cluster_data['sentiment_score'].mean(),
-                'avg_urgency': cluster_data['urgency_score'].mean(),
-                'avg_complexity': cluster_data['complexity_score'].mean(),
-                'dominant_rule_cohort': cluster_data['cohort'].mode()[0] if len(cluster_data) > 0 else 'unknown'
-            }
-            ml_cohort_profiles[f'ml_cluster_{cluster}'] = profile
-        
-        return features_df, ml_cohort_profiles, silhouette_avg
+        return df[mask]['conversation_id'].tolist()
+    
+    def _create_tag_based_cohorts(self, analysis_df, cursor):
+        """Create cohorts based on common tag patterns"""
+        try:
+            # Collect all tags
+            all_tags = []
+            for _, row in analysis_df.iterrows():
+                try:
+                    tags = json.loads(row['tags']) if row['tags'] else []
+                    all_tags.extend(tags)
+                except:
+                    continue
+            
+            # Find most common tags
+            tag_counts = Counter(all_tags)
+            common_tags = [tag for tag, count in tag_counts.most_common(10) if count >= 3]
+            
+            cohorts_created = 0
+            
+            # Create cohorts for common tags
+            for tag in common_tags:
+                # Find conversations with this tag
+                matching_convs = []
+                for _, row in analysis_df.iterrows():
+                    try:
+                        tags = json.loads(row['tags']) if row['tags'] else []
+                        if tag in tags:
+                            matching_convs.append(row['conversation_id'])
+                    except:
+                        continue
+                
+                if len(matching_convs) >= 3:  # Only create cohort if at least 3 conversations
+                    cohort_name = f"Tag: {tag.replace('_', ' ').title()}"
+                    cohort_description = f"Conversations tagged with '{tag}'"
+                    
+                    cursor.execute('''
+                        INSERT INTO customer_cohorts (cohort_name, cohort_description, cohort_criteria, conversation_count)
+                        VALUES (?, ?, ?, ?)
+                    ''', (
+                        cohort_name,
+                        cohort_description,
+                        json.dumps({"tag": tag}),
+                        len(matching_convs)
+                    ))
+                    
+                    cohort_id = cursor.lastrowid
+                    
+                    # Insert mappings
+                    for conv_id in matching_convs:
+                        cursor.execute('''
+                            INSERT INTO conversation_cohort_mapping (conversation_id, cohort_id)
+                            VALUES (?, ?)
+                        ''', (conv_id, cohort_id))
+                    
+                    cohorts_created += 1
+                    print(f"Created tag-based cohort '{cohort_name}' with {len(matching_convs)} conversations")
+            
+            return cohorts_created
+            
+        except Exception as e:
+            logger.error(f"Error creating tag-based cohorts: {str(e)}")
+            return 0
+    
+    def get_cohort_analysis(self, conn):
+        """Get detailed cohort analysis"""
+        try:
+            # Get cohort summary
+            cohorts_df = pd.read_sql_query('''
+                SELECT c.*, COUNT(ccm.conversation_id) as actual_count
+                FROM customer_cohorts c
+                LEFT JOIN conversation_cohort_mapping ccm ON c.id = ccm.cohort_id
+                GROUP BY c.id
+                ORDER BY actual_count DESC
+            ''', conn)
+            
+            print("\n" + "="*80)
+            print("COHORT ANALYSIS SUMMARY")
+            print("="*80)
+            
+            for _, cohort in cohorts_df.iterrows():
+                print(f"\n🎯 {cohort['cohort_name']}")
+                print(f"   📝 {cohort['cohort_description']}")
+                print(f"   📊 Conversations: {cohort['actual_count']}")
+                
+                # Get sample conversations for this cohort
+                sample_query = '''
+                    SELECT ca.conversation_id, ca.customer_sentiment, ca.nature_of_request
+                    FROM conversation_analysis ca
+                    JOIN conversation_cohort_mapping ccm ON ca.conversation_id = ccm.conversation_id
+                    WHERE ccm.cohort_id = ?
+                    LIMIT 3
+                '''
+                
+                sample_df = pd.read_sql_query(sample_query, conn, params=(cohort['id'],))
+                if len(sample_df) > 0:
+                    print(f"   🔍 Sample conversations: {list(sample_df['conversation_id'])}")
+            
+            return cohorts_df
+            
+        except Exception as e:
+            logger.error(f"Error getting cohort analysis: {str(e)}")
+            return pd.DataFrame()

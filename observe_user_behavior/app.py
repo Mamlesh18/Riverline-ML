@@ -1,212 +1,300 @@
-import pandas as pd
 import sqlite3
+import pandas as pd
 import json
+import logging
 from datetime import datetime
-from observe_user_behavior.conversation_analyzer import ConversationAnalyzer
-from observe_user_behavior.cohort_builder import CohortBuilder
-from observe_user_behavior.visualizer import BehaviorVisualizer
+from .gemini_analyzer import GeminiAnalyzer
+from .cohort_builder import CohortBuilder
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class UserBehaviorAnalyzer:
-    def __init__(self, db_path='riverline.db'):
-        self.db_path = db_path
-        self.analyzer = ConversationAnalyzer(db_path)
+    def __init__(self, db_name='riverline.db'):
+        self.db_path = db_name
+        self.conn = None
+        self.gemini_analyzer = GeminiAnalyzer()
         self.cohort_builder = CohortBuilder()
-        self.visualizer = BehaviorVisualizer()
-        self.analysis_results = {}
+        self._initialize_database()
         
-    def run_analysis(self):
-        print("Loading conversations from database...")
-        conversations = self.analyzer.load_conversations()
-        print(f"Loaded {len(conversations)} conversations")
+    def _initialize_database(self):
+        """Initialize database connection and create analysis tables"""
+        self.conn = sqlite3.connect(self.db_path)
+        self._create_analysis_tables()
+    
+    def _create_analysis_tables(self):
+        """Create tables for storing analysis results"""
+        cursor = self.conn.cursor()
         
-        resolved_count = conversations['is_resolved'].sum()
-        open_count = len(conversations) - resolved_count
-        print(f"\nResolved conversations: {resolved_count}")
-        print(f"Open conversations: {open_count}")
+        # Table for conversation analysis results
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS conversation_analysis (
+                conversation_id INTEGER PRIMARY KEY,
+                is_resolved BOOLEAN,
+                resolution_confidence REAL,
+                tags TEXT,  -- JSON array of tags
+                nature_of_request TEXT,
+                customer_sentiment TEXT,
+                urgency_level TEXT,
+                conversation_type TEXT,
+                customer_behavior TEXT,
+                analysis_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                gemini_response TEXT  -- Full Gemini response for debugging
+            )
+        ''')
         
-        print("\nExtracting advanced features...")
-        features_df = self.analyzer.extract_advanced_features(conversations)
+        # Table for cohorts
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS customer_cohorts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cohort_name TEXT,
+                cohort_description TEXT,
+                cohort_criteria TEXT,  -- JSON criteria
+                conversation_count INTEGER,
+                created_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
         
-        if features_df.empty:
-            print("No conversation features extracted. Check if conversation_messages table has data.")
+        # Table for conversation-cohort mapping
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS conversation_cohort_mapping (
+                conversation_id INTEGER,
+                cohort_id INTEGER,
+                FOREIGN KEY (conversation_id) REFERENCES conversation_analysis(conversation_id),
+                FOREIGN KEY (cohort_id) REFERENCES customer_cohorts(id)
+            )
+        ''')
+        
+        self.conn.commit()
+        print("Analysis tables created successfully")
+    
+    def get_conversations_for_analysis(self, limit=None):
+        """Get conversations from database for analysis"""
+        query = '''
+            SELECT conversation_id, 
+                   GROUP_CONCAT(
+                       CASE WHEN is_customer = 1 THEN 'CUSTOMER: ' ELSE 'AGENT: ' END ||
+                       author_id || ': ' || message_text, 
+                       ' | '
+                   ) as full_conversation,
+                   COUNT(*) as message_count,
+                   MIN(created_at) as start_time,
+                   MAX(created_at) as end_time
+            FROM grouped_conversations
+            GROUP BY conversation_id
+            ORDER BY conversation_id
+        '''
+        
+        if limit:
+            query += f' LIMIT {limit}'
+            
+        return pd.read_sql_query(query, self.conn)
+    
+    def analyze_conversation(self, conversation_data):
+        """Analyze a single conversation using Gemini AI"""
+        try:
+            conversation_id = conversation_data['conversation_id']
+            full_conversation = conversation_data['full_conversation']
+            
+            print(f"Analyzing conversation {conversation_id}...")
+            
+            # Use Gemini to analyze the conversation
+            analysis_result = self.gemini_analyzer.analyze_conversation(full_conversation)
+            
+            if analysis_result:
+                # Store the analysis in database
+                self._store_analysis_result(conversation_id, analysis_result)
+                return analysis_result
+            else:
+                logger.error(f"Failed to analyze conversation {conversation_id}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error analyzing conversation {conversation_data['conversation_id']}: {str(e)}")
             return None
-        
-        print(f"Extracted features for {len(features_df)} conversations")
-        
-        print("Identifying conversation patterns...")
-        features_df, variance_explained = self.analyzer.identify_conversation_patterns(features_df)
-        
-        print("\nAssigning customer cohorts...")
-        features_df = self.cohort_builder.assign_cohorts(features_df)
-        
-        print("Analyzing cohort statistics...")
-        cohort_stats = self.cohort_builder.analyze_cohort_statistics(features_df)
-        
-        print("\nIdentifying resolution patterns...")
-        resolution_patterns = self.cohort_builder.identify_resolution_patterns(features_df)
-        
-        print("\nCreating ML-based cohorts...")
-        features_df, ml_cohort_profiles, silhouette_score = self.cohort_builder.create_ml_cohorts(features_df)
-        
-        self._save_analysis_results(features_df, cohort_stats, resolution_patterns, ml_cohort_profiles)
-        
-        print("\nGenerating visualizations...")
-        try:
-            self.visualizer.create_comprehensive_report(features_df, cohort_stats)
-            print("Visualizations created successfully!")
-        except Exception as e:
-            print(f"Warning: Could not create visualizations: {e}")
-        
-        try:
-            self._update_database_with_cohorts(features_df)
-            print("Database updated with cohort assignments")
-        except Exception as e:
-            print(f"Warning: Could not update database with cohorts: {e}")
-        
-        return {
-            'total_conversations': len(conversations),
-            'resolved_conversations': resolved_count,
-            'open_conversations': open_count,
-            'cohort_distribution': cohort_stats.to_dict(),
-            'resolution_patterns': resolution_patterns,
-            'ml_cohort_profiles': ml_cohort_profiles,
-            'features_dataframe': features_df
-        }
     
-    def _save_analysis_results(self, features_df, cohort_stats, resolution_patterns, ml_cohort_profiles):
-        results = {
-            'analysis_timestamp': datetime.now().isoformat(),
-            'total_conversations_analyzed': len(features_df),
-            'resolved_conversations': int(features_df['is_resolved'].sum()),
-            'open_conversations': int((features_df['is_resolved'] == 0).sum()),
-            'cohort_statistics': cohort_stats.to_dict(),
-            'resolution_patterns': resolution_patterns,
-            'ml_cohort_profiles': ml_cohort_profiles
-        }
+    def _store_analysis_result(self, conversation_id, analysis):
+        """Store analysis result in database"""
+        cursor = self.conn.cursor()
         
-        with open('user_behavior_analysis_results.json', 'w') as f:
-            json.dump(results, f, indent=2, default=str)
+        cursor.execute('''
+            INSERT OR REPLACE INTO conversation_analysis 
+            (conversation_id, is_resolved, resolution_confidence, tags, nature_of_request,
+             customer_sentiment, urgency_level, conversation_type, customer_behavior, gemini_response)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            conversation_id,
+            analysis.get('is_resolved', False),
+            analysis.get('resolution_confidence', 0.0),
+            json.dumps(analysis.get('tags', [])),
+            analysis.get('nature_of_request', ''),
+            analysis.get('customer_sentiment', ''),
+            analysis.get('urgency_level', ''),
+            analysis.get('conversation_type', ''),
+            analysis.get('customer_behavior', ''),
+            json.dumps(analysis)  # Store full response
+        ))
         
-        features_df.to_csv('conversation_features.csv', index=False)
-        print("Analysis results saved to files")
-        
-    def _update_database_with_cohorts(self, features_df):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Check if columns already exist
-        cursor.execute("PRAGMA table_info(conversations)")
-        columns = [column[1] for column in cursor.fetchall()]
-        
-        if 'cohort' not in columns:
-            cursor.execute('''
-                ALTER TABLE conversations 
-                ADD COLUMN cohort TEXT DEFAULT 'unassigned'
-            ''')
-        
-        if 'ml_cohort' not in columns:
-            cursor.execute('''
-                ALTER TABLE conversations 
-                ADD COLUMN ml_cohort INTEGER DEFAULT -1
-            ''')
-        
-        # Update cohort assignments
-        for _, row in features_df.iterrows():
-            cursor.execute('''
-                UPDATE conversations 
-                SET cohort = ?, ml_cohort = ?
-                WHERE conversation_id = ?
-            ''', (row['cohort'], int(row['ml_cohort']), row['conversation_id']))
-        
-        conn.commit()
-        conn.close()
-        
-    def get_cohort_recommendations(self):
-        recommendations = {
-            'quick_resolution': {
-                'description': 'Simple queries resolved quickly',
-                'recommendation': 'Use automated responses or chatbots for these cases'
-            },
-            'frustrated_customer': {
-                'description': 'Customers showing negative sentiment or frustration',
-                'recommendation': 'Prioritize with senior agents, consider phone call escalation'
-            },
-            'urgent_technical': {
-                'description': 'Urgent issues with technical complexity',
-                'recommendation': 'Route to technical specialists immediately'
-            },
-            'patient_detailed': {
-                'description': 'Customers providing detailed information patiently',
-                'recommendation': 'Provide comprehensive email responses with documentation'
-            },
-            'abandoned_conversation': {
-                'description': 'Conversations where customer stopped responding',
-                'recommendation': 'Send follow-up message or email to re-engage'
-            },
-            'ping_pong': {
-                'description': 'Long back-and-forth conversations',
-                'recommendation': 'Consider phone call to resolve more efficiently'
-            },
-            'escalation_needed': {
-                'description': 'Complex issues with frustrated customers',
-                'recommendation': 'Immediate escalation to senior support or management'
-            },
-            'standard_support': {
-                'description': 'Standard support queries',
-                'recommendation': 'Follow standard support procedures'
+        self.conn.commit()
+    
+    def clear_previous_analysis(self):
+        """Clear previous analysis data to start fresh"""
+        cursor = self.conn.cursor()
+        cursor.execute('DELETE FROM conversation_analysis')
+        cursor.execute('DELETE FROM customer_cohorts')
+        cursor.execute('DELETE FROM conversation_cohort_mapping')
+        self.conn.commit()
+        print("🧹 Cleared previous analysis data")
+    
+    def analyze_all_conversations(self, limit=3):
+        """Analyze only the first 3 conversations and create cohorts"""
+        try:
+            # Clear previous analysis to start fresh
+            self.clear_previous_analysis()
+            
+            # Get only first 3 conversations for analysis
+            conversations_df = self.get_conversations_for_analysis(limit=3)
+            
+            print(f"Starting analysis of FIRST 3 conversations only...")
+            print("="*60)
+            
+            analyzed_count = 0
+            resolved_count = 0
+            open_count = 0
+            
+            # Analyze each of the 3 conversations
+            for idx, (_, conv_data) in enumerate(conversations_df.iterrows(), 1):
+                print(f"\n📋 ANALYZING CONVERSATION {idx}/3...")
+                print(f"Conversation ID: {conv_data['conversation_id']}")
+                print(f"Message Count: {conv_data['message_count']}")
+                print(f"Preview: {conv_data['full_conversation'][:200]}...")
+                print("-" * 60)
+                
+                analysis = self.analyze_conversation(conv_data)
+                
+                if analysis:
+                    analyzed_count += 1
+                    if analysis.get('is_resolved', False):
+                        resolved_count += 1
+                        print(f"✅ Status: RESOLVED")
+                    else:
+                        open_count += 1
+                        print(f"🔓 Status: OPEN")
+                    
+                    print(f"🏷️  Tags: {analysis.get('tags', [])}")
+                    print(f"📝 Nature: {analysis.get('nature_of_request', 'unknown')}")
+                    print(f"😊 Sentiment: {analysis.get('customer_sentiment', 'unknown')}")
+                    print(f"⚡ Urgency: {analysis.get('urgency_level', 'unknown')}")
+                else:
+                    print(f"❌ Analysis failed for conversation {conv_data['conversation_id']}")
+                
+                # Add delay between API calls
+                import time
+                time.sleep(2)
+            
+            # Create cohorts based on the 3 analyzed conversations
+            print(f"\n🎯 Creating cohorts from {analyzed_count} analyzed conversations...")
+            cohorts_created = self.cohort_builder.create_cohorts(self.conn)
+            
+            # Get unique tags
+            unique_tags = self._get_unique_tags()
+            
+            return {
+                'status': 'success',
+                'total_analyzed': analyzed_count,
+                'resolved_count': resolved_count,
+                'open_count': open_count,
+                'unique_tags': len(unique_tags),
+                'cohorts_created': cohorts_created
             }
-        }
-        
-        return recommendations
+            
+        except Exception as e:
+            logger.error(f"Error in analyze_all_conversations: {str(e)}")
+            return {
+                'status': 'failed',
+                'error': str(e)
+            }
     
-    def export_cohort_summary(self):
-        conn = sqlite3.connect(self.db_path)
+    def _get_unique_tags(self):
+        """Get all unique tags from analysis"""
+        cursor = self.conn.cursor()
+        results = cursor.execute('SELECT tags FROM conversation_analysis WHERE tags IS NOT NULL').fetchall()
         
-        # Check if cohort column exists
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(conversations)")
-        columns = [column[1] for column in cursor.fetchall()]
+        all_tags = set()
+        for (tags_json,) in results:
+            try:
+                tags = json.loads(tags_json)
+                all_tags.update(tags)
+            except:
+                continue
+                
+        return list(all_tags)
+    
+    def print_analysis_summary(self):
+        """Print summary of analysis results for the 3 conversations"""
+        print("\n" + "="*80)
+        print("FIRST 3 CONVERSATIONS - ANALYSIS SUMMARY")
+        print("="*80)
         
-        if 'cohort' not in columns:
-            print("Cohort column not found in database. Running basic summary...")
-            summary_query = '''
-                SELECT 
-                    'all_conversations' as cohort,
-                    COUNT(*) as count,
-                    SUM(CASE WHEN is_resolved = 1 THEN 1 ELSE 0 END) as resolved_count,
-                    AVG(sentiment_score) as avg_sentiment,
-                    AVG(urgency_score) as avg_urgency,
-                    AVG(complexity_score) as avg_complexity,
-                    AVG(message_count) as avg_messages
-                FROM conversations
-            '''
+        # Get resolved vs open statistics
+        cursor = self.conn.cursor()
+        
+        total_analyzed = cursor.execute('SELECT COUNT(*) FROM conversation_analysis').fetchone()[0]
+        resolved_count = cursor.execute('SELECT COUNT(*) FROM conversation_analysis WHERE is_resolved = 1').fetchone()[0]
+        open_count = total_analyzed - resolved_count
+        
+        print(f"📊 Total Conversations Analyzed: {total_analyzed}")
+        print(f"✅ Resolved Conversations: {resolved_count}")
+        print(f"🔓 Open Conversations: {open_count}")
+        
+        # Show all analyzed conversations (should be 3)
+        detailed_query = '''
+            SELECT conversation_id, is_resolved, tags, nature_of_request, 
+                   customer_sentiment, urgency_level, conversation_type, customer_behavior
+            FROM conversation_analysis 
+            ORDER BY conversation_id
+        '''
+        
+        results_df = pd.read_sql_query(detailed_query, self.conn)
+        
+        print(f"\n🔍 DETAILED ANALYSIS RESULTS:")
+        print("=" * 80)
+        
+        for idx, row in results_df.iterrows():
+            tags = json.loads(row['tags']) if row['tags'] else []
+            resolved_status = "✅ RESOLVED" if row['is_resolved'] else "🔓 OPEN"
+            
+            print(f"\n📋 CONVERSATION {idx + 1} (ID: {row['conversation_id']})")
+            print(f"   Status: {resolved_status}")
+            print(f"   Nature: {row['nature_of_request']}")
+            print(f"   Sentiment: {row['customer_sentiment']}")
+            print(f"   Urgency: {row['urgency_level']}")
+            print(f"   Type: {row['conversation_type']}")
+            print(f"   Behavior: {row['customer_behavior']}")
+            print(f"   Tags: {tags}")
+        
+        # Show cohorts created from these 3 conversations
+        cohorts_df = pd.read_sql_query('SELECT * FROM customer_cohorts', self.conn)
+        print(f"\n🎯 COHORTS CREATED: {len(cohorts_df)}")
+        
+        if len(cohorts_df) > 0:
+            print("\nCohort Details:")
+            for _, cohort in cohorts_df.iterrows():
+                print(f"  🔹 {cohort['cohort_name']}: {cohort['conversation_count']} conversations")
+                print(f"     {cohort['cohort_description']}")
         else:
-            summary_query = '''
-                SELECT 
-                    cohort,
-                    COUNT(*) as count,
-                    SUM(CASE WHEN is_resolved = 1 THEN 1 ELSE 0 END) as resolved_count,
-                    AVG(sentiment_score) as avg_sentiment,
-                    AVG(urgency_score) as avg_urgency,
-                    AVG(complexity_score) as avg_complexity,
-                    AVG(message_count) as avg_messages
-                FROM conversations
-                WHERE cohort IS NOT NULL
-                GROUP BY cohort
-                ORDER BY count DESC
-            '''
+            print("   No cohorts created (might need more diverse conversation patterns)")
         
-        summary_df = pd.read_sql_query(summary_query, conn)
-        summary_df['resolution_rate'] = summary_df['resolved_count'] / summary_df['count'] * 100
+        # Show unique tags found
+        unique_tags = self._get_unique_tags()
+        print(f"\n🏷️  UNIQUE TAGS FOUND: {len(unique_tags)}")
+        if unique_tags:
+            print(f"   Tags: {unique_tags}")
         
-        summary_df.to_csv('cohort_summary.csv', index=False)
-        conn.close()
-        
-        return summary_df
+        print("\n" + "="*80)
     
     def close(self):
-        """Close all database connections"""
-        try:
-            self.analyzer.close()
-        except:
-            pass
+        """Close database connection"""
+        if self.conn:
+            self.conn.close()
+            print("Database connection closed")

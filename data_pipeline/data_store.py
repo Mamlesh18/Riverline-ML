@@ -7,17 +7,20 @@ logger = logging.getLogger(__name__)
 
 class DataStore:
     def __init__(self, db_name='riverline.db'):
-        self.db_path = f'{db_name}'
+        self.db_path = db_name
         self.conn = None
         self._initialize_database()
     
     def _initialize_database(self):
+        """Initialize database connection and create tables"""
         self.conn = sqlite3.connect(self.db_path)
         self._create_tables()
-    
+        
     def _create_tables(self):
+        """Create minimal database tables"""
         cursor = self.conn.cursor()
         
+        # Raw tweets table - exact copy of CSV structure
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS raw_tweets (
                 tweet_id TEXT PRIMARY KEY,
@@ -27,27 +30,13 @@ class DataStore:
                 text TEXT,
                 response_tweet_id TEXT,
                 in_response_to_tweet_id TEXT,
-                ingestion_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
+        # Grouped conversations table
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS conversations (
-                conversation_id TEXT PRIMARY KEY,
-                root_tweet_id TEXT,
-                participant_ids TEXT,
-                start_time TIMESTAMP,
-                last_update_time TIMESTAMP,
-                message_count INTEGER,
-                is_resolved BOOLEAN DEFAULT FALSE,
-                sentiment_score REAL,
-                urgency_score REAL,
-                complexity_score REAL
-            )
-        ''')
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS conversation_messages (
+            CREATE TABLE IF NOT EXISTS grouped_conversations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 conversation_id TEXT,
                 tweet_id TEXT,
@@ -55,147 +44,206 @@ class DataStore:
                 is_customer BOOLEAN,
                 message_text TEXT,
                 created_at TIMESTAMP,
+                response_tweet_id TEXT,
+                in_response_to_tweet_id TEXT,
                 sequence_number INTEGER,
-                FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id),
                 FOREIGN KEY (tweet_id) REFERENCES raw_tweets(tweet_id)
             )
         ''')
         
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ingestion_log (
-                batch_id TEXT PRIMARY KEY,
-                file_hash TEXT UNIQUE,
-                records_processed INTEGER,
-                start_time TIMESTAMP,
-                end_time TIMESTAMP,
-                status TEXT
-            )
-        ''')
-        
+        # Create indexes for better performance
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_conversation_id ON grouped_conversations(conversation_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_author_id ON raw_tweets(author_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_created_at ON raw_tweets(created_at)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_conversation_id ON conversation_messages(conversation_id)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_response_tweet ON raw_tweets(response_tweet_id)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_in_response_to ON raw_tweets(in_response_to_tweet_id)')
         
         self.conn.commit()
+        print("Database tables created successfully")
     
-    def check_if_processed(self, file_hash):
-        cursor = self.conn.cursor()
-        result = cursor.execute(
-            'SELECT batch_id FROM ingestion_log WHERE file_hash = ? AND status = ?',
-            (file_hash, 'completed')
-        ).fetchone()
-        return result is not None
-    
-    def log_ingestion_start(self, batch_id, file_hash):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            '''INSERT INTO ingestion_log (batch_id, file_hash, start_time, status) 
-               VALUES (?, ?, ?, ?)''',
-            (batch_id, file_hash, datetime.now(), 'in_progress')
-        )
-        self.conn.commit()
-    
-    def log_ingestion_complete(self, batch_id, records_processed):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            '''UPDATE ingestion_log 
-               SET end_time = ?, records_processed = ?, status = ?
-               WHERE batch_id = ?''',
-            (datetime.now(), records_processed, 'completed', batch_id)
-        )
-        self.conn.commit()
-    
-    def insert_tweets_batch(self, tweets_df):
-        tweets_df = tweets_df.copy()
-        tweets_df['created_at'] = tweets_df['created_at'].astype(str)
-        tweets_df['ingestion_timestamp'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        
+    def insert_raw_tweets(self, df):
+        """Insert cleaned tweets into raw_tweets table"""
         try:
-            tweets_df.to_sql('raw_tweets', self.conn, if_exists='append', index=False, method='multi', chunksize=1000)
-        except Exception as e:
-            for _, row in tweets_df.iterrows():
-                try:
-                    self.conn.execute('''
-                        INSERT OR IGNORE INTO raw_tweets 
-                        (tweet_id, author_id, inbound, created_at, text, response_tweet_id, in_response_to_tweet_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (row['tweet_id'], row['author_id'], row['inbound'], 
-                         row['created_at'], row['text'], row['response_tweet_id'], 
-                         row['in_response_to_tweet_id']))
-                except:
-                    continue
-            self.conn.commit()
-    
-    def insert_conversation(self, conversation_data):
-        cursor = self.conn.cursor()
-        
-        # Convert timestamps to strings
-        conv_data = conversation_data.copy()
-        if 'start_time' in conv_data:
-            conv_data['start_time'] = str(conv_data['start_time'])
-        if 'last_update_time' in conv_data:
-            conv_data['last_update_time'] = str(conv_data['last_update_time'])
+            # Prepare data for insertion
+            df_copy = df.copy()
+            df_copy['created_at'] = df_copy['created_at'].astype(str)
+            df_copy['created_timestamp'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
-        cursor.execute(
-            '''INSERT OR REPLACE INTO conversations 
-               (conversation_id, root_tweet_id, participant_ids, start_time, 
-                last_update_time, message_count, is_resolved, sentiment_score, 
-                urgency_score, complexity_score)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-            tuple(conv_data.values())
-        )
-        self.conn.commit()
-    
-    def insert_conversation_messages(self, messages_df):
-        messages_df = messages_df.copy()
-        messages_df['created_at'] = messages_df['created_at'].astype(str)
-        
-        try:
-            messages_df.to_sql('conversation_messages', self.conn, if_exists='append', index=False, method='multi', chunksize=500)
-        except Exception as e:
-            for _, row in messages_df.iterrows():
-                try:
-                    cursor = self.conn.cursor()
-                    cursor.execute('''
-                        INSERT INTO conversation_messages 
-                        (conversation_id, tweet_id, author_id, is_customer, message_text, created_at, sequence_number)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (row['conversation_id'], row['tweet_id'], row['author_id'], 
-                         row['is_customer'], row['message_text'], row['created_at'], 
-                         row['sequence_number']))
-                except:
-                    continue
+            # Insert using pandas to_sql
+            df_copy.to_sql('raw_tweets', self.conn, if_exists='replace', index=False)
             self.conn.commit()
+            
+            print(f"Inserted {len(df)} tweets into raw_tweets table")
+            
+        except Exception as e:
+            logger.error(f"Error inserting raw tweets: {str(e)}")
+            raise
     
-    def get_conversation_by_id(self, conversation_id):
+    def insert_conversations(self, conversations):
+        """Insert grouped conversations with sequential conversation IDs"""
+        try:
+            cursor = self.conn.cursor()
+            
+            # Clear existing conversation data
+            cursor.execute('DELETE FROM grouped_conversations')
+            
+            # Assign sequential conversation IDs starting from 1
+            conversation_id = 1
+            
+            for original_conv_id, messages in conversations.items():
+                # Skip single-message conversations that don't have responses
+                if len(messages) == 1:
+                    # Check if this single message has any children
+                    msg = messages[0]
+                    has_children = any(
+                        other_messages for other_conv_id, other_messages in conversations.items() 
+                        if other_conv_id != original_conv_id and 
+                        any(m['in_response_to_tweet_id'] == msg['tweet_id'] for m in other_messages)
+                    )
+                    if not has_children:
+                        continue
+                
+                for seq_num, message in enumerate(messages):
+                    cursor.execute('''
+                        INSERT INTO grouped_conversations 
+                        (conversation_id, tweet_id, author_id, is_customer, message_text, 
+                         created_at, response_tweet_id, in_response_to_tweet_id, sequence_number)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        conversation_id,  # Use sequential ID instead of tweet ID
+                        message['tweet_id'],
+                        message['author_id'],
+                        message['is_customer'],
+                        message['message_text'],
+                        message['created_at'].strftime('%Y-%m-%d %H:%M:%S'),
+                        message['response_tweet_id'],
+                        message['in_response_to_tweet_id'],
+                        seq_num
+                    ))
+                
+                conversation_id += 1  # Increment for next conversation
+            
+            self.conn.commit()
+            print(f"Inserted {conversation_id - 1} multi-message conversations into grouped_conversations table")
+            
+        except Exception as e:
+            logger.error(f"Error inserting conversations: {str(e)}")
+            raise
+    
+    def get_conversations_with_messages(self, limit=10, order_by='row'):
+        """Retrieve full conversations with their messages for display"""
+        
+        if order_by == 'row':
+            # Simple row order - first conversations in database
+            query = '''
+                SELECT conversation_id, tweet_id, author_id, is_customer, 
+                       message_text, created_at, sequence_number,
+                       response_tweet_id, in_response_to_tweet_id
+                FROM grouped_conversations
+                WHERE conversation_id IN (
+                    SELECT DISTINCT conversation_id 
+                    FROM grouped_conversations 
+                    ORDER BY conversation_id
+                    LIMIT ?
+                )
+                ORDER BY conversation_id, sequence_number
+            '''
+        elif order_by == 'size':
+            # Order by conversation size (most messages first)
+            query = '''
+                SELECT conversation_id, tweet_id, author_id, is_customer, 
+                       message_text, created_at, sequence_number,
+                       response_tweet_id, in_response_to_tweet_id
+                FROM grouped_conversations
+                WHERE conversation_id IN (
+                    SELECT conversation_id 
+                    FROM grouped_conversations 
+                    GROUP BY conversation_id
+                    ORDER BY COUNT(*) DESC
+                    LIMIT ?
+                )
+                ORDER BY conversation_id, sequence_number
+            '''
+        else:
+            # Default to row order
+            query = '''
+                SELECT conversation_id, tweet_id, author_id, is_customer, 
+                       message_text, created_at, sequence_number,
+                       response_tweet_id, in_response_to_tweet_id
+                FROM grouped_conversations
+                WHERE conversation_id IN (
+                    SELECT DISTINCT conversation_id 
+                    FROM grouped_conversations 
+                    ORDER BY conversation_id
+                    LIMIT ?
+                )
+                ORDER BY conversation_id, sequence_number
+            '''
+        
+        df = pd.read_sql_query(query, self.conn, params=(limit,))
+        
+        # Group by conversation_id and maintain order
+        conversations = {}
+        for conv_id, group in df.groupby('conversation_id'):
+            conversations[conv_id] = group.to_dict('records')
+        
+        return conversations
+    
+    def get_conversation_stats(self):
+        """Get detailed statistics about conversation sizes"""
         query = '''
-            SELECT cm.*, rt.text, rt.created_at
-            FROM conversation_messages cm
-            JOIN raw_tweets rt ON cm.tweet_id = rt.tweet_id
-            WHERE cm.conversation_id = ?
-            ORDER BY cm.sequence_number
+            SELECT 
+                conversation_id,
+                COUNT(*) as message_count,
+                MIN(created_at) as start_time,
+                MAX(created_at) as end_time,
+                COUNT(DISTINCT author_id) as participants
+            FROM grouped_conversations
+            GROUP BY conversation_id
+            ORDER BY message_count DESC
         '''
-        return pd.read_sql_query(query, self.conn, params=(conversation_id,))
+        
+        stats_df = pd.read_sql_query(query, self.conn)
+        
+        print("\n" + "="*60)
+        print("CONVERSATION SIZE DISTRIBUTION")
+        print("="*60)
+        
+        # Show size distribution
+        size_counts = stats_df['message_count'].value_counts().sort_index()
+        print("Messages per conversation:")
+        for size, count in size_counts.items():
+            print(f"  {size} messages: {count} conversations")
+        
+        print(f"\nTop 10 largest conversations:")
+        print(stats_df.head(10)[['conversation_id', 'message_count', 'participants']].to_string(index=False))
+        
+        return stats_df
     
-    def get_unresolved_conversations(self, limit=None):
-        query = '''
-            SELECT * FROM conversations 
-            WHERE is_resolved = FALSE
-        '''
-        if limit:
-            query += f' LIMIT {limit}'
-        return pd.read_sql_query(query, self.conn)
-    
-    def update_conversation_status(self, conversation_id, is_resolved):
+    def get_basic_stats(self):
+        """Get basic statistics about the processed data"""
+        stats = {}
+        
+        # Raw tweets stats
         cursor = self.conn.cursor()
-        cursor.execute(
-            'UPDATE conversations SET is_resolved = ? WHERE conversation_id = ?',
-            (is_resolved, conversation_id)
-        )
-        self.conn.commit()
+        
+        stats['total_tweets'] = cursor.execute('SELECT COUNT(*) FROM raw_tweets').fetchone()[0]
+        stats['total_conversations'] = cursor.execute('SELECT COUNT(DISTINCT conversation_id) FROM grouped_conversations').fetchone()[0]
+        stats['customer_messages'] = cursor.execute('SELECT COUNT(*) FROM grouped_conversations WHERE is_customer = 1').fetchone()[0]
+        stats['agent_messages'] = cursor.execute('SELECT COUNT(*) FROM grouped_conversations WHERE is_customer = 0').fetchone()[0]
+        
+        # Average messages per conversation
+        avg_messages = cursor.execute('''
+            SELECT AVG(msg_count) FROM (
+                SELECT COUNT(*) as msg_count 
+                FROM grouped_conversations 
+                GROUP BY conversation_id
+            )
+        ''').fetchone()[0]
+        stats['avg_messages_per_conversation'] = round(avg_messages, 2) if avg_messages else 0
+        
+        return stats
     
     def close(self):
+        """Close database connection"""
         if self.conn:
             self.conn.close()
+            print("Database connection closed")
