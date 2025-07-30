@@ -11,7 +11,7 @@ def run_data_pipeline():
     print("="*60)
     
     pipeline = DataPipeline(db_name='riverline.db')
-    result = pipeline.run('./dataset/twcs-full.csv')
+    result = pipeline.run('./dataset/twcs.csv')
     
     print(f"\nPipeline Status: {result['status']}")
     
