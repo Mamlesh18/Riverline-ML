@@ -54,11 +54,11 @@ A comprehensive machine learning pipeline that analyzes customer support convers
 *Hybrid analysis pipeline combining rule-based, ML, and LLM approaches*
 
 ### **Console Output**
-![Console Output](docs/output-1.png)
+![Console Output](example/output-1.png)
 *Finding out whether the chat is resolved or unresolved*
 
 ### **CSV Results**
-![CSV Results](docs/output-2.png)
+![CSV Results](example/output-2.png)
 *Generated Cohorts from LLM*
 
 ---
