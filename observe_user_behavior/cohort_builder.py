@@ -1,8 +1,7 @@
-import sqlite3
 import pandas as pd
 import json
 import logging
-from collections import defaultdict, Counter
+from collections import Counter
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +161,7 @@ class CohortBuilder:
                 try:
                     tags = json.loads(row['tags']) if row['tags'] else []
                     all_tags.extend(tags)
-                except:
+                except json.JSONDecodeError:
                     continue
             
             # Find most common tags
@@ -180,7 +179,7 @@ class CohortBuilder:
                         tags = json.loads(row['tags']) if row['tags'] else []
                         if tag in tags:
                             matching_convs.append(row['conversation_id'])
-                    except:
+                    except json.JSONDecodeError:
                         continue
                 
                 if len(matching_convs) >= 3:  # Only create cohort if at least 3 conversations

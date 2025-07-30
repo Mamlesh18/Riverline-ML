@@ -213,7 +213,7 @@ class DataStore:
         for size, count in size_counts.items():
             print(f"  {size} messages: {count} conversations")
         
-        print(f"\nTop 10 largest conversations:")
+        print("\nTop 10 largest conversations:")
         print(stats_df.head(10)[['conversation_id', 'message_count', 'participants']].to_string(index=False))
         
         return stats_df

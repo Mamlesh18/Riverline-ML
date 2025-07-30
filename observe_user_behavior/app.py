@@ -2,7 +2,6 @@ import sqlite3
 import pandas as pd
 import json
 import logging
-from datetime import datetime
 from .gemini_analyzer import GeminiAnalyzer
 from .cohort_builder import CohortBuilder
 
@@ -155,7 +154,7 @@ class UserBehaviorAnalyzer:
             # Get only first 3 conversations for analysis
             conversations_df = self.get_conversations_for_analysis(limit=3)
             
-            print(f"Starting analysis of FIRST 3 conversations only...")
+            print("Starting analysis of FIRST 3 conversations only...")
             print("="*60)
             
             analyzed_count = 0
@@ -176,10 +175,10 @@ class UserBehaviorAnalyzer:
                     analyzed_count += 1
                     if analysis.get('is_resolved', False):
                         resolved_count += 1
-                        print(f"✅ Status: RESOLVED")
+                        print("✅ Status: RESOLVED")
                     else:
                         open_count += 1
-                        print(f"🔓 Status: OPEN")
+                        print("🔓 Status: OPEN")
                     
                     print(f"🏷️  Tags: {analysis.get('tags', [])}")
                     print(f"📝 Nature: {analysis.get('nature_of_request', 'unknown')}")
@@ -225,7 +224,7 @@ class UserBehaviorAnalyzer:
             try:
                 tags = json.loads(tags_json)
                 all_tags.update(tags)
-            except:
+            except json.JSONDecodeError:
                 continue
                 
         return list(all_tags)
@@ -257,7 +256,7 @@ class UserBehaviorAnalyzer:
         
         results_df = pd.read_sql_query(detailed_query, self.conn)
         
-        print(f"\n🔍 DETAILED ANALYSIS RESULTS:")
+        print("\n🔍 DETAILED ANALYSIS RESULTS:")
         print("=" * 80)
         
         for idx, row in results_df.iterrows():

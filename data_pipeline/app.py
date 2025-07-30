@@ -1,6 +1,5 @@
 import pandas as pd
 import logging
-from datetime import datetime
 from data_pipeline.data_clean import DataCleaner
 from data_pipeline.data_store import DataStore
 

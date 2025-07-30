@@ -1,6 +1,5 @@
 import requests
 import json
-import os
 import logging
 from typing import Dict, Optional
 GEMINI_API_KEY = "AIzaSyCvXhAn1JcpTVHEgntW-tqUnVeP1q8Y3Fc"
