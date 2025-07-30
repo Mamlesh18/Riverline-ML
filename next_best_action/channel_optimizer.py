@@ -1,6 +1,5 @@
 import logging
 from datetime import datetime, timedelta
-import json
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +190,7 @@ class ChannelOptimizer:
             # Validate time format
             try:
                 datetime.fromisoformat(recommendation['send_time'].replace('Z', '+00:00'))
-            except:
+            except ValueError:
                 logger.warning(f"Invalid time format: {recommendation['send_time']}")
                 return False
             
