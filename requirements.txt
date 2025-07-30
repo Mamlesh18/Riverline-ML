@@ -3,3 +3,11 @@ numpy>=1.23.0
 nltk>=3.8
 emoji>=2.8.0
 sqlite3
+json
+logging
+requests
+csv
+datetime
+re
+scikit-learn
+nltk
