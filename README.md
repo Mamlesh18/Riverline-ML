@@ -89,7 +89,7 @@ A comprehensive machine learning pipeline that analyzes customer support convers
 
 ---
 
-## 🚀 **How to Run**
+##  **How to Run**
 
 ### **Prerequisites**
 ```bash
@@ -150,17 +150,17 @@ python main.py
 
 ---
 
-## 🛠️ **Technical Standards**
+## **Technical Standards**
 
 ### **Code Quality**
-- ✅ **Ruff Checks Passed**: Strict linting and formatting standards
-- ✅ **UV Project**: Modern Python dependency management
-- ✅ **Modular Architecture**: Clean separation of concerns
-- ✅ **Type Safety**: Proper error handling and validation
+-  **Ruff Checks Passed**: Strict linting and formatting standards
+-  **UV Project**: Modern Python dependency management
+-  **Modular Architecture**: Clean separation of concerns
+-  **Type Safety**: Proper error handling and validation
 
 ---
 
-## 🧪 **Architecture Patterns**
+##  **Architecture Patterns**
 
 ### **Design Principles**
 - **Single Responsibility**: Each module has one clear purpose
@@ -171,7 +171,7 @@ python main.py
 ---
 
 
-## 🙏 **Acknowledgments**
+##  **Acknowledgments**
 
 **Special thanks to Riverline for this engaging challenge!** 
 
