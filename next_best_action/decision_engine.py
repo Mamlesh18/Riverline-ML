@@ -3,6 +3,7 @@ import json
 import requests
 import logging
 from datetime import datetime, timedelta
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +184,7 @@ class DecisionEngine:
             'Content-Type': 'application/json',
             'X-goog-api-key': self.api_key
         }
-        
+        time.sleep(1)  # Optional: Add a small delay to avoid rate limiting
         try:
             response = requests.post(self.api_url, headers=headers, json=payload, timeout=30)
             

@@ -4,6 +4,7 @@ import logging
 from typing import Dict, Optional
 from dotenv import load_dotenv
 import os
+import time
 load_dotenv()
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ class GeminiAnalyzer:
         
         # Create the prompt for analysis
         prompt = self._create_analysis_prompt(conversation_text)
-        
+        time.sleep(1)  # Optional: Add a small delay to avoid rate limiting
         # Prepare the request payload
         payload = {
             "contents": [

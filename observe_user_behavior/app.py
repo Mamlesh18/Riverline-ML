@@ -146,12 +146,12 @@ class UserBehaviorAnalyzer:
         print("🧹 Cleared previous analysis data")
     
     
-    def analyze_all_conversations(self, limit=10):
+    def analyze_all_conversations(self, limit=100):
         """Analyze only the first 3 conversations and create cohorts"""
         try:
             self.clear_previous_analysis()
             
-            conversations_df = self.get_conversations_for_analysis(limit=10)
+            conversations_df = self.get_conversations_for_analysis(limit=100)
             
             print("Starting analysis of FIRST 3 conversations only...")
             print("="*60)
